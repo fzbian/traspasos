@@ -135,13 +135,13 @@ def main_page():
         
         ui.label('Almacén de Origen:')
         source_warehouse = ui.select(
-            ['Bodega', 'Gran San', 'Visto', 'Lo Nuestro', 'Burbuja Lo Nuestro', 'Medellin', 'San Jose'],
+            ['Bodega', 'Gran San', 'Visto', 'Lo Nuestro', 'Burbuja Lo Nuestro', 'Medellin', 'San Jose', 'Averiados'],
             label='Almacén de Origen'
         ).props('outlined required full-width')
         
         ui.label('Almacén de Destino:')
         dest_warehouse = ui.select(
-            ['Bodega', 'Gran San', 'Visto', 'Lo Nuestro', 'Burbuja Lo Nuestro', 'Medellin', 'San Jose'],
+            ['Bodega', 'Gran San', 'Visto', 'Lo Nuestro', 'Burbuja Lo Nuestro', 'Medellin', 'San Jose', 'Averiados'],
             label='Almacén de Destino',
         ).props('outlined required full-width')
         
