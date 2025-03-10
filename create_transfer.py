@@ -79,8 +79,8 @@ def create_transfer(origin_warehouse_name, destination_warehouse_name, product_t
             # Validar la transferencia
             models.execute_kw(db, uid, password, 'stock.picking', 'button_validate', [[picking_id]])
 
-            message = f"{origin_warehouse_name} ▶ {destination_warehouse_name}\n" + "\n".join(product_details)
-            threading.Thread(target=send_message_to_group, args=(message,)).start()
+            #message = f"{origin_warehouse_name} ▶ {destination_warehouse_name}\n" + "\n".join(product_details)
+            #threading.Thread(target=send_message_to_group, args=(message,)).start()
             return f"Transferencia creada y validada con éxito. ID: {picking_id}"
 
         except TransferError as e:

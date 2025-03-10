@@ -82,8 +82,8 @@ def create_entry(warehouse_name, productos):
         models.execute_kw(db, uid, password, 'stock.picking', 'action_assign', [[picking_id]])
         models.execute_kw(db, uid, password, 'stock.picking', 'button_validate', [[picking_id]])
 
-        message = f"Entrada a *{warehouse_name}*\n" + "\n".join(product_details)
-        threading.Thread(target=send_message_to_group, args=(message,)).start()
+        #message = f"Entrada a *{warehouse_name}*\n" + "\n".join(product_details)
+        #threading.Thread(target=send_message_to_group, args=(message,)).start()
 
         return f"Entrada realizada correctamente ✅."
 
