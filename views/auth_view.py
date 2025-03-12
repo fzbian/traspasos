@@ -70,10 +70,11 @@ class AuthView(ft.View):
                     [
                         ft.Container(
                             content=ft.Image(
-                                src="https://cdn-icons-png.flaticon.com/512/1000/1000997.png",
+                                src="/assets/logo.png",
                                 width=120,
                                 height=120,
-                                fit=ft.ImageFit.CONTAIN
+                                fit=ft.ImageFit.CONTAIN,
+                                error_content=ft.Icon(ft.Icons.BUSINESS, size=60, color=ft.Colors.BLUE)  # Fallback icon if logo not found
                             ),
                             alignment=ft.alignment.center,
                             margin=ft.margin.only(bottom=20)

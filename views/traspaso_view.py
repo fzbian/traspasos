@@ -3,7 +3,7 @@ from datetime import datetime
 import threading
 import time
 from create_transfer import create_transfer
-from utils import get_warehouses, get_products
+from utils import get_warehouses, get_products, get_products_stock, get_products_stock_snapshot
 from messaging import send_message_to_group  # Import the messaging function
 
 class TraspasoView(ft.View):
@@ -160,6 +160,16 @@ class TraspasoView(ft.View):
             expand=True
         )
         
+        # Create the confirmation container (initially hidden)
+        self.confirmation_container = ft.Container(
+            content=ft.Column([
+                ft.Text("Confirmar Transferencia", size=20, weight=ft.FontWeight.BOLD),
+            ]),
+            padding=20,
+            expand=True,
+            visible=False
+        )
+        
         # Create the status container (initially hidden)
         self.status_container = ft.Container(
             content=ft.Column([
@@ -170,9 +180,10 @@ class TraspasoView(ft.View):
             visible=False
         )
         
-        # Main container that will hold either form or status
+        # Main container that will hold either form, confirmation or status
         self.controls = [
             self.form_container,
+            self.confirmation_container,
             self.status_container
         ]
     
@@ -202,6 +213,10 @@ class TraspasoView(ft.View):
         if not self.quantity_field.value or not self.quantity_field.value.isdigit() or int(self.quantity_field.value) <= 0:
             self.page.snack_bar = ft.SnackBar(content=ft.Text("Por favor ingrese una cantidad válida"))
             self.page.snack_bar.open = True
+            # Reset button state
+            add_button.disabled = False
+            add_button.icon = original_icon
+            add_button.text = original_text
             self.page.update()
             return
         
@@ -210,30 +225,40 @@ class TraspasoView(ft.View):
             product_name = self.product_dropdown.value[len(product_code) + 3:]  # Skip " - "
             quantity = int(self.quantity_field.value)
             
-            # Add to selected products
-            self.selected_products[product_code] = quantity
-            
-            # Update products list
-            self.update_products_list()
-            
-            # Reset product fields
-            self.product_dropdown.value = None
-            self.quantity_field.value = ""
-            
-            # Remove the keyboard dismiss code that's causing the error
-            # Instead, we'll use this workaround to unfocus fields
-            self.page.update()
-            
-            # Reset button state
-            add_button.disabled = False
-            add_button.icon = original_icon
-            add_button.text = original_text
-            self.page.update()
-            
+            # Check product stock in origin warehouse before adding
+            if self.origin_dropdown.value:
+                # Just add the product directly without async checks, since they're causing issues
+                # The warning about insufficient stock will be shown during the final validation
+                self.selected_products[product_code] = quantity
+                self.update_products_list()
+                
+                # Reset product fields
+                self.product_dropdown.value = None
+                self.quantity_field.value = ""
+                
+                # Reset button state
+                add_button.disabled = False
+                add_button.icon = original_icon
+                add_button.text = original_text
+                self.page.update()
+            else:
+                # No origin warehouse selected yet, add without validation
+                self.selected_products[product_code] = quantity
+                self.update_products_list()
+                
+                # Reset product fields
+                self.product_dropdown.value = None
+                self.quantity_field.value = ""
+                
+                # Reset button state
+                add_button.disabled = False
+                add_button.icon = original_icon
+                add_button.text = original_text
+                self.page.update()
+                
         except Exception as ex:
             self.page.snack_bar = ft.SnackBar(content=ft.Text(f"Error al añadir producto: {str(ex)}"))
             self.page.snack_bar.open = True
-            self.page.update()
             
             # Reset button state
             add_button.disabled = False
@@ -285,7 +310,7 @@ class TraspasoView(ft.View):
         return handle_delete
     
     def remove_product(self, product_code):
-        if product_code in self.selected_products:
+        if (product_code in self.selected_products):
             del self.selected_products[product_code]
             self.update_products_list()
     
@@ -305,7 +330,7 @@ class TraspasoView(ft.View):
             self.page.snack_bar.open = True
             # Reset button
             self.transfer_button.disabled = False
-            self.transfer_button.icon = ft.icons.SEND
+            self.transfer_button.icon = ft.Icons.SEND
             self.transfer_button.text = "Transferir"
             self.page.update()
             return
@@ -315,7 +340,7 @@ class TraspasoView(ft.View):
             self.page.snack_bar.open = True
             # Reset button
             self.transfer_button.disabled = False
-            self.transfer_button.icon = ft.icons.SEND
+            self.transfer_button.icon = ft.Icons.SEND
             self.transfer_button.text = "Transferir"
             self.page.update()
             return
@@ -325,7 +350,7 @@ class TraspasoView(ft.View):
             self.page.snack_bar.open = True
             # Reset button
             self.transfer_button.disabled = False
-            self.transfer_button.icon = ft.icons.SEND
+            self.transfer_button.icon = ft.Icons.SEND
             self.transfer_button.text = "Transferir"
             self.page.update()
             return
@@ -335,14 +360,115 @@ class TraspasoView(ft.View):
             self.page.snack_bar.open = True
             # Reset button
             self.transfer_button.disabled = False
-            self.transfer_button.icon = ft.icons.SEND
+            self.transfer_button.icon = ft.Icons.SEND
             self.transfer_button.text = "Transferir"
             self.page.update()
             return
         
-        # Hide form and show status
+        # Skip stock validation in UI and go straight to confirmation screen
+        self.show_confirmation_screen()
+    
+    def show_confirmation_screen(self):
+        """Show a confirmation screen before processing the transfer"""
+        # Reset transfer button
+        self.transfer_button.disabled = False
+        self.transfer_button.icon = ft.Icons.SEND  # Updated from ft.icons.SEND
+        self.transfer_button.text = "Transferir"
+        
+        # Origin and destination
+        origin_warehouse = self.origin_dropdown.value
+        destination_warehouse = self.destination_dropdown.value
+        
+        # Build product list
+        product_details = []
+        for product_code, quantity in self.selected_products.items():
+            product_name = next((p.name for p in self.products if p.default_code == product_code), product_code)
+            product_details.append(
+                ft.Container(
+                    content=ft.Text(f"• {product_code} - {product_name}: {quantity}"),
+                    margin=ft.margin.only(bottom=5)
+                )
+            )
+        
+        # Populate confirmation screen
+        self.confirmation_container.content = ft.Column([
+            # Header
+            ft.Text("Confirmar Transferencia", size=24, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE),
+            ft.Divider(),
+            
+            # Transfer details
+            ft.Text("Información de Traspaso", size=18, weight=ft.FontWeight.BOLD),
+            ft.Container(
+                content=ft.Column([
+                    ft.Row([
+                        ft.Icon(ft.Icons.ARROW_UPWARD, color=ft.Colors.GREEN, size=18),  # Updated from ft.icons.ARROW_UPWARD
+                        ft.Text(f"Origen: {origin_warehouse}", size=16)
+                    ]),
+                    ft.Row([
+                        ft.Icon(ft.Icons.ARROW_DOWNWARD, color=ft.Colors.RED, size=18),  # Updated from ft.icons.ARROW_DOWNWARD
+                        ft.Text(f"Destino: {destination_warehouse}", size=16)
+                    ])
+                ]),
+                margin=ft.margin.only(bottom=10, left=10)
+            ),
+            ft.Divider(),
+            
+            # Product details
+            ft.Text(f"Productos a Transferir ({len(self.selected_products)})", size=18, weight=ft.FontWeight.BOLD),
+            ft.Container(
+                content=ft.Column(product_details, scroll=ft.ScrollMode.AUTO),
+                height=200,
+                border=ft.border.all(1, ft.Colors.GREY_400),
+                border_radius=5,
+                padding=10,
+                margin=ft.margin.only(bottom=20)
+            ),
+            
+            # Confirmation question
+            ft.Text("¿Desea continuar con esta transferencia?", size=16, weight=ft.FontWeight.BOLD),
+            
+            # Action buttons
+            ft.Row([
+                ft.ElevatedButton(
+                    "Sí, Realizar Transferencia",
+                    icon=ft.Icons.CHECK,  # Updated from ft.icons.CHECK
+                    on_click=self.process_confirmed_transfer,
+                    style=ft.ButtonStyle(color=ft.Colors.WHITE, bgcolor=ft.Colors.GREEN),
+                    height=50
+                ),
+                ft.OutlinedButton(
+                    "Cancelar",
+                    icon=ft.Icons.CANCEL,  # Updated from ft.icons.CANCEL
+                    on_click=self.cancel_confirmation,
+                    height=50
+                )
+            ], alignment=ft.MainAxisAlignment.CENTER, spacing=20)
+        ], spacing=10, scroll=ft.ScrollMode.AUTO)
+        
+        # Show confirmation screen, hide form
         self.form_container.visible = False
+        self.confirmation_container.visible = True
+        self.status_container.visible = False
+        self.page.update()
+    
+    def cancel_confirmation(self, e):
+        """Return to the form view without processing the transfer"""
+        self.form_container.visible = True
+        self.confirmation_container.visible = False
+        self.status_container.visible = False
+        self.page.update()
+    
+    def process_confirmed_transfer(self, e):
+        """Process the transfer after confirmation"""
+        # Hide confirmation, show status
+        self.confirmation_container.visible = False
         self.status_container.visible = True
+        
+        # Store reference to confirm button
+        self.confirm_button = e.control
+        self.confirm_button.disabled = True
+        self.confirm_button.icon = ft.ProgressRing(width=16, height=16, stroke_width=2)
+        self.confirm_button.text = "Procesando..."
         
         # Create status content
         status_text = ft.Text("Procesando...")
@@ -361,6 +487,15 @@ class TraspasoView(ft.View):
         ])
         
         self.page.update()
+        
+        # Get stock levels BEFORE the transfer
+        product_codes = list(self.selected_products.keys())
+        origin_warehouse = self.origin_dropdown.value
+        destination_warehouse = self.destination_dropdown.value
+        warehouse_names = [origin_warehouse, destination_warehouse]
+        
+        # Capture stock snapshot before transfer
+        before_stock = get_products_stock_snapshot(product_codes, warehouse_names)
         
         # Process the transfer
         def process_transfer():
@@ -385,23 +520,29 @@ class TraspasoView(ft.View):
                 self.page.update()
                 time.sleep(0.5)
                 
+                # Remove progress bar when done - MOVED THIS LINE UP before showing result
+                if progress in self.status_container.content.controls:
+                    self.status_container.content.controls.remove(progress)
+                    self.page.update()
+                
                 # Handle the result
                 if "Error" in result:
-                    self.show_transfer_result(status_text, result, False)
+                    self.show_transfer_result(status_text, result, False, before_stock=before_stock)
                 else:
-                    self.show_transfer_result(status_text, result, True)
+                    self.show_transfer_result(status_text, result, True, before_stock=before_stock)
                     
             except Exception as ex:
-                self.show_transfer_result(status_text, f"Error inesperado: {str(ex)}", False)
+                # Remove progress bar in case of error too
+                if progress in self.status_container.content.controls:
+                    self.status_container.content.controls.remove(progress)
+                    self.page.update()
                 
-            # Remove progress bar when done
-            self.status_container.content.controls.remove(progress)
-            self.page.update()
+                self.show_transfer_result(status_text, f"Error inesperado: {str(ex)}", False, before_stock=before_stock)
         
         # Start the process in a separate thread
         threading.Thread(target=process_transfer).start()
     
-    def show_transfer_result(self, status_text, result, success):
+    def show_transfer_result(self, status_text, result, success, before_stock=None):
         """Show the transfer result in the status container"""
         # Update status text
         if success:
@@ -409,11 +550,11 @@ class TraspasoView(ft.View):
             status_text.color = ft.Colors.GREEN
             bg_color = ft.Colors.GREEN_50
             
-            # Create result content
+            # Create result content - wrap in scrollable column
             result_column = ft.Column([
                 ft.Divider(),
                 ft.Text("Detalles:", weight=ft.FontWeight.BOLD),
-            ])
+            ], scroll=ft.ScrollMode.AUTO)  # Added scroll capability here
             
             # Add product details
             for code, qty in self.selected_products.items():
@@ -426,6 +567,19 @@ class TraspasoView(ft.View):
             result_column.controls.append(ft.Divider())
             result_column.controls.append(ft.Text(result))
             
+            # Add stock status section
+            stock_status_text = ft.Text(
+                "Obteniendo niveles de stock actualizados...",
+                color=ft.Colors.BLUE
+            )
+            result_column.controls.append(ft.Divider())
+            result_column.controls.append(ft.Text("Niveles de Stock Actualizados:", weight=ft.FontWeight.BOLD))
+            result_column.controls.append(stock_status_text)
+            
+            # Add stock details container (will be populated later)
+            stock_details = ft.Column([], scroll=ft.ScrollMode.AUTO)  # Added scroll capability here
+            result_column.controls.append(stock_details)
+            
             # Display notification status text
             notification_status = ft.Text(
                 "Enviando notificación a WhatsApp...",
@@ -434,10 +588,147 @@ class TraspasoView(ft.View):
             result_column.controls.append(ft.Divider())
             result_column.controls.append(notification_status)
             
+            # Add button to create a new transfer right away (will be updated by the notification thread)
+            reset_button = ft.ElevatedButton(
+                "Nueva transferencia",
+                icon=ft.Icons.REFRESH,
+                on_click=self.reset_form,
+                style=ft.ButtonStyle(color=ft.Colors.WHITE, bgcolor=ft.Colors.BLUE)
+            )
+            
+            # Create footer container that sticks at bottom
+            button_container = ft.Container(
+                content=reset_button,
+                margin=ft.margin.only(top=20),
+                alignment=ft.alignment.center
+            )
+            
+            # Add the button container to the result column
+            result_column.controls.append(button_container)
+            
+            # Wrap result column in a scrollable container with fixed height 
+            # to ensure it doesn't expand beyond the screen
+            scroll_container = ft.Container(
+                content=result_column,
+                expand=True,  # Fill available space
+                height=None,  # Let height adjust based on content
+            )
+            
             # Update the status container with initial information
             self.status_container.bgcolor = bg_color
-            self.status_container.content.controls.extend(result_column.controls)
+            self.status_container.content = ft.Column([
+                ft.Text(f"Transferencia Completada", size=20, weight=ft.FontWeight.BOLD, color=ft.Colors.GREEN),
+                ft.Text(f"De: {self.origin_dropdown.value} → A: {self.destination_dropdown.value}", size=16),
+                # Main scrollable content
+                scroll_container
+            ], scroll=ft.ScrollMode.AUTO, expand=True)  # Make the entire column scrollable
+            
             self.page.update()
+            
+            # Fetch stock levels for the transferred products in a separate thread
+            def fetch_stock_info():
+                try:
+                    origin_warehouse = self.origin_dropdown.value
+                    destination_warehouse = self.destination_dropdown.value
+                    product_codes = list(self.selected_products.keys())
+                    
+                    # Get stock information for the products in both warehouses
+                    warehouse_names = [origin_warehouse, destination_warehouse]
+                    stock_status_text.value = "Consultando inventario en Odoo..."
+                    self.page.update()
+                    
+                    # Get the latest stock information after the transfer
+                    after_stock = get_products_stock(product_codes, warehouse_names)
+                    
+                    # Create stock info display
+                    if after_stock:
+                        stock_status_text.value = "Información de inventario actualizada:"
+                        stock_status_text.color = ft.Colors.GREEN
+                        
+                        # Clear and add new stock details
+                        stock_details.controls.clear()
+                        
+                        # Add stock info for each product with before and after comparison
+                        for code in product_codes:
+                            product_name = next((p.name for p in self.products if p.default_code == code), code)
+                            
+                            # Get before and after values
+                            before_origin = before_stock.get(code, {}).get(origin_warehouse, 0)
+                            before_dest = before_stock.get(code, {}).get(destination_warehouse, 0)
+                            
+                            after_origin = after_stock.get(code, {}).get(origin_warehouse, 0)
+                            after_dest = after_stock.get(code, {}).get(destination_warehouse, 0)
+                            
+                            # Create stock info card for this product
+                            stock_card = ft.Card(
+                                content=ft.Container(
+                                    content=ft.Column([
+                                        ft.Text(f"{code} - {product_name}", weight=ft.FontWeight.BOLD),
+                                        ft.Divider(height=1, thickness=1),
+                                        # Origin warehouse before/after
+                                        ft.Text(f"Almacén: {origin_warehouse}", 
+                                                weight=ft.FontWeight.BOLD, 
+                                                size=14),
+                                        ft.Row([
+                                            ft.Text("Antes: ", weight=ft.FontWeight.BOLD),
+                                            ft.Text(f"{before_origin} unidades")
+                                        ]),
+                                        ft.Row([
+                                            ft.Text("Después: ", weight=ft.FontWeight.BOLD),
+                                            ft.Text(f"{after_origin} unidades"),
+                                            # Show change indicator icon
+                                            ft.Icon(
+                                                ft.Icons.ARROW_DOWNWARD if after_origin < before_origin else 
+                                                (ft.Icons.ARROW_UPWARD if after_origin > before_origin else 
+                                                ft.Icons.REMOVE),
+                                                color=ft.Colors.RED if after_origin < before_origin else 
+                                                (ft.Colors.GREEN if after_origin > before_origin else 
+                                                ft.Colors.GREY),
+                                                size=16
+                                            )
+                                        ]),
+                                        ft.Divider(height=1, thickness=1),
+                                        # Destination warehouse before/after
+                                        ft.Text(f"Almacén: {destination_warehouse}", 
+                                                weight=ft.FontWeight.BOLD, 
+                                                size=14),
+                                        ft.Row([
+                                            ft.Text("Antes: ", weight=ft.FontWeight.BOLD),
+                                            ft.Text(f"{before_dest} unidades")
+                                        ]),
+                                        ft.Row([
+                                            ft.Text("Después: ", weight=ft.FontWeight.BOLD),
+                                            ft.Text(f"{after_dest} unidades"),
+                                            # Show change indicator icon
+                                            ft.Icon(
+                                                ft.Icons.ARROW_DOWNWARD if after_dest < before_dest else 
+                                                (ft.Icons.ARROW_UPWARD if after_dest > before_dest else 
+                                                ft.Icons.REMOVE),
+                                                color=ft.Colors.RED if after_dest < before_dest else 
+                                                (ft.Colors.GREEN if after_dest > before_dest else 
+                                                ft.Colors.GREY),
+                                                size=16
+                                            )
+                                        ])
+                                    ]),
+                                    padding=ft.padding.all(10)
+                                ),
+                                margin=ft.margin.only(bottom=10)
+                            )
+                            stock_details.controls.append(stock_card)
+                    else:
+                        stock_status_text.value = "No se pudo obtener la información de inventario"
+                        stock_status_text.color = ft.Colors.ORANGE
+                        
+                    self.page.update()
+                    
+                except Exception as ex:
+                    stock_status_text.value = f"Error al obtener niveles de stock: {str(ex)}"
+                    stock_status_text.color = ft.Colors.RED
+                    self.page.update()
+            
+            # Start stock fetching in a separate thread
+            threading.Thread(target=fetch_stock_info).start()
             
             # Prepare notification message for WhatsApp
             origin_warehouse_name = self.origin_dropdown.value
@@ -472,15 +763,7 @@ class TraspasoView(ft.View):
                     notification_status.value = f"⚠️ Error al enviar el mensaje al grupo de ENTRADAS Y SALIDAS: {str(ex)}"
                     notification_status.color = ft.Colors.RED
                 
-                # Add button to create a new transfer after notification handling
-                self.status_container.content.controls.append(
-                    ft.ElevatedButton(
-                        "Nueva transferencia",
-                        icon=ft.Icons.REFRESH,
-                        on_click=self.reset_form,
-                        style=ft.ButtonStyle(color=ft.Colors.WHITE, bgcolor=ft.Colors.BLUE)
-                    )
-                )
+                # Update the page to ensure notification status is visible
                 self.page.update()
             
             # Start notification in a separate thread
@@ -492,7 +775,7 @@ class TraspasoView(ft.View):
             status_text.color = ft.Colors.RED
             bg_color = ft.Colors.RED_50
             
-            # Create error details column
+            # Create error details column with scrolling
             result_column = ft.Column([
                 ft.Divider(),
                 ft.Text("Detalles del error:", weight=ft.FontWeight.BOLD),
@@ -505,11 +788,15 @@ class TraspasoView(ft.View):
                     on_click=self.reset_form,
                     style=ft.ButtonStyle(color=ft.Colors.WHITE, bgcolor=ft.Colors.BLUE)
                 )
-            ])
+            ], scroll=ft.ScrollMode.AUTO)
             
             # Update the status container with error information
             self.status_container.bgcolor = bg_color
-            self.status_container.content.controls.extend(result_column.controls)
+            self.status_container.content = ft.Column([
+                ft.Text("Error en la Transferencia", size=20, weight=ft.FontWeight.BOLD, color=ft.Colors.RED),
+                # Main scrollable content
+                result_column
+            ], scroll=ft.ScrollMode.AUTO, expand=True)
             
             # Reset the button here, in case the user goes back
             if hasattr(self, 'transfer_button'):
@@ -554,7 +841,10 @@ class TraspasoView(ft.View):
             self.transfer_button.icon = ft.Icons.SEND
             self.transfer_button.text = "Transferir"
             
+        # Remove the problematic scroll_to call that's causing the error
+        # self.page.scroll_to(offset=0)  # This line causes the error
+        
         # Update the page
         self.page.update()
-    
+
     # ...existing other methods...

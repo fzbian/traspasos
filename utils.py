@@ -1,9 +1,11 @@
 import xmlrpc.client
 from models import Warehouse, Product, Transfer
-from create_transfer import create_transfer
+# Remove the circular import:
+# from create_transfer import create_transfer
 from create_entry import create_entry
 from config import url, db, username, password, uid, TransferError, Producto
 from datetime import datetime, timedelta
+import time
 
 def get_warehouses():
     if uid:
@@ -25,18 +27,19 @@ def get_products():
         print("Failed to authenticate with Odoo")
         return []
 
-def get_recent_transfers(limit=10):
+def get_recent_transfers(limit=15, warehouse_filter=None):
     """
-    Retrieve the most recent internal transfers between locations - optimized version.
+    Retrieve the most recent internal transfers between locations.
     Filters out references that:
     - Start with "PRB"
     - Start with "AVE"
     - Contain "/POS"
     
-    Continues fetching until the requested limit is reached after filtering.
+    Can filter by warehouse name (origin or destination)
     
     Args:
-        limit: The maximum number of transfers to retrieve (default: 10)
+        limit: The maximum number of transfers to retrieve (default: 15)
+        warehouse_filter: Optional warehouse name to filter by (default: None)
         
     Returns:
         A list of simplified transfer objects
@@ -48,19 +51,43 @@ def get_recent_transfers(limit=10):
         models = xmlrpc.client.ServerProxy('{}/xmlrpc/2/object'.format(url))
         
         # Initial batch size and offset for pagination
-        batch_size = limit * 2  # Start with a moderate batch size
+        batch_size = max(limit * 2, 30)
         offset = 0
-        max_attempts = 5  # Maximum number of attempts to avoid infinite loops
+        max_attempts = 5
         attempts = 0
         filtered_pickings = []
+        
+        # If warehouse filter is provided, first get the location IDs for that warehouse
+        location_domain = []
+        if warehouse_filter and warehouse_filter != "Todos":
+            # First find the warehouse ID by name
+            warehouse_ids = models.execute_kw(db, uid, password, 'stock.warehouse', 'search', 
+                [[('name', '=', warehouse_filter)]])
+            
+            if warehouse_ids:
+                # Get all stock locations for this warehouse
+                warehouse_locations = models.execute_kw(db, uid, password, 'stock.location', 'search', 
+                    [[('warehouse_id', '=', warehouse_ids[0])]])
+                
+                if warehouse_locations:
+                    # Create domain filter: origin OR destination matches any warehouse location
+                    location_domain = ['|', 
+                        ('location_id', 'in', warehouse_locations), 
+                        ('location_dest_id', 'in', warehouse_locations)
+                    ]
         
         # Keep fetching batches until we have enough transfers or reach max attempts
         while len(filtered_pickings) < limit and attempts < max_attempts:
             attempts += 1
             
-            # Get a batch of transfers
+            # Combine filter domains
+            domain = [('state', '=', 'done')]
+            if location_domain:
+                domain.extend(location_domain)
+            
+            # Get a batch of transfers with the combined domain filter
             current_batch = models.execute_kw(db, uid, password, 'stock.picking', 'search_read', 
-                [[('state', '=', 'done')]],
+                [domain],
                 {
                     'fields': ['id', 'name', 'date', 'location_id', 'location_dest_id', 'origin', 'state', 'scheduled_date', 'date_done'],
                     'order': 'date desc', 
@@ -304,3 +331,290 @@ def get_employees_with_pins():
     except Exception as ex:
         print(f"Error getting employees: {str(ex)}")
         return []
+
+def get_product_stock(product_code, warehouse_name=None):
+    """
+    Get stock levels for a specific product in one or all warehouses.
+    
+    Args:
+        product_code (str): The product's default_code
+        warehouse_name (str, optional): Name of warehouse to check stock for. 
+                                       If None, returns stock for all warehouses.
+    
+    Returns:
+        dict: Dictionary with warehouse names as keys and stock quantities as values
+              Example: {"Bodega": 10, "San Jose": 5}
+    """
+    try:
+        if not uid:
+            return {}
+            
+        models = xmlrpc.client.ServerProxy('{}/xmlrpc/2/object'.format(url))
+        
+        # First, get the product ID from the default_code
+        product_ids = models.execute_kw(db, uid, password, 'product.product', 'search', 
+            [[('default_code', '=', product_code)]])
+        
+        if not product_ids:
+            return {}  # Product not found
+            
+        product_id = product_ids[0]
+        
+        # Get all warehouses or filter by name
+        warehouse_domain = []
+        if warehouse_name:
+            warehouse_domain = [('name', '=', warehouse_name)]
+            
+        warehouse_ids = models.execute_kw(db, uid, password, 'stock.warehouse', 'search', 
+            [warehouse_domain])
+            
+        if not warehouse_ids:
+            return {}  # No matching warehouses found
+            
+        # Get warehouses with their names for reference
+        warehouses = models.execute_kw(db, uid, password, 'stock.warehouse', 'read', 
+            [warehouse_ids], {'fields': ['id', 'name', 'lot_stock_id']})
+            
+        # Create a dictionary to store results
+        stock_by_warehouse = {}
+        
+        # For each warehouse, get the stock quantity
+        for wh in warehouses:
+            wh_name = wh['name']
+            stock_location_id = wh['lot_stock_id'][0]
+            
+            # Get the available quantity in this location
+            quant_data = models.execute_kw(db, uid, password, 'stock.quant', 'search_read', 
+                [[('product_id', '=', product_id), ('location_id', '=', stock_location_id)]],
+                {'fields': ['quantity', 'available_quantity']}
+            )
+            
+            # Sum quantities from all quants
+            total_qty = sum(q.get('available_quantity', 0) for q in quant_data)
+            
+            # Store in result dict
+            stock_by_warehouse[wh_name] = total_qty
+            
+        return stock_by_warehouse
+        
+    except Exception as ex:
+        import traceback
+        traceback.print_exc()
+        print(f"Error fetching product stock: {str(ex)}")
+        return {}
+
+def get_products_stock(product_codes, warehouse_names=None):
+    """
+    Get stock levels for multiple products across one or more warehouses.
+    
+    Args:
+        product_codes (list): List of product default_codes
+        warehouse_names (list, optional): List of warehouse names to check stock for.
+                                         If None, returns stock for all warehouses.
+    
+    Returns:
+        dict: Dictionary with product codes as keys and warehouse stock as sub-dictionaries
+              Example: {"ABC123": {"Bodega": 10, "San Jose": 5}}
+    """
+    try:
+        if not uid:
+            return {}
+            
+        models = xmlrpc.client.ServerProxy('{}/xmlrpc/2/object'.format(url))
+        
+        # Get product IDs from default_codes
+        product_domain = [('default_code', 'in', product_codes)]
+        product_data = models.execute_kw(db, uid, password, 'product.product', 'search_read', 
+            [product_domain],
+            {'fields': ['id', 'default_code']}
+        )
+        
+        if not product_data:
+            return {}  # No products found
+            
+        # Map product IDs to their default_codes
+        product_map = {p['id']: p['default_code'] for p in product_data if p.get('default_code')}
+        product_ids = list(product_map.keys())
+        
+        # Get warehouse data
+        warehouse_domain = []
+        if warehouse_names:
+            warehouse_domain = [('name', 'in', warehouse_names)]
+            
+        warehouse_data = models.execute_kw(db, uid, password, 'stock.warehouse', 'search_read', 
+            [warehouse_domain],
+            {'fields': ['id', 'name', 'lot_stock_id']}
+        )
+        
+        if not warehouse_data:
+            return {}  # No warehouses found
+            
+        # Map warehouse data
+        warehouse_map = {w['id']: w for w in warehouse_data}
+        stock_location_ids = [w['lot_stock_id'][0] for w in warehouse_data]
+        
+        # Get all quants for these products and locations in a single query
+        quant_domain = [
+            ('product_id', 'in', product_ids),
+            ('location_id', 'in', stock_location_ids)
+        ]
+        quant_data = models.execute_kw(db, uid, password, 'stock.quant', 'search_read', 
+            [quant_domain],
+            {'fields': ['product_id', 'location_id', 'quantity', 'available_quantity']}
+        )
+        
+        # Process the results
+        result = {code: {} for code in product_codes}  # Initialize with all requested products
+        
+        for quant in quant_data:
+            product_id = quant['product_id'][0]
+            location_id = quant['location_id'][0]
+            qty = quant.get('available_quantity', 0)
+            
+            # Find which product and warehouse this belongs to
+            product_code = product_map.get(product_id)
+            
+            if not product_code:
+                continue  # Skip if we can't map to a product code
+                
+            # Find which warehouse this location belongs to
+            for wh_id, wh_data in warehouse_map.items():
+                if wh_data['lot_stock_id'][0] == location_id:
+                    wh_name = wh_data['name']
+                    
+                    # Initialize or add to product's warehouse quantity
+                    if wh_name not in result.get(product_code, {}):
+                        result[product_code][wh_name] = qty
+                    else:
+                        result[product_code][wh_name] += qty
+                    
+                    break
+        
+        return result
+        
+    except Exception as ex:
+        import traceback
+        traceback.print_exc()
+        print(f"Error fetching multiple products stock: {str(ex)}")
+        return {}
+
+def get_products_stock_snapshot(product_codes, warehouse_names=None):
+    """
+    Get current stock levels for multiple products across warehouses to use as a snapshot.
+    
+    Args:
+        product_codes (list): List of product default_codes
+        warehouse_names (list, optional): List of warehouse names to check stock for.
+                                         If None, returns stock for all warehouses.
+    
+    Returns:
+        dict: Dictionary with product codes as keys and warehouse stock as sub-dictionaries
+              Example: {"ABC123": {"Bodega": 10, "San Jose": 5}}
+    """
+    # Call the existing function to get the current stock levels
+    return get_products_stock(product_codes, warehouse_names)
+
+def verify_transfer_state(picking_id, max_attempts=5, delay_between_attempts=2):
+    """
+    Verify that a transfer (picking) has reached the 'done' state.
+    
+    Args:
+        picking_id: The ID of the picking to check
+        max_attempts: Maximum number of attempts to check (default: 5)
+        delay_between_attempts: Time to wait between attempts in seconds (default: 2)
+        
+    Returns:
+        tuple: (success, state, message)
+            - success (bool): True if the transfer is in 'done' state, False otherwise
+            - state (str): The current state of the transfer
+            - message (str): A descriptive message about the result
+    """
+    if not uid:
+        return False, "unknown", "No se pudo autenticar con Odoo"
+        
+    models = xmlrpc.client.ServerProxy('{}/xmlrpc/2/object'.format(url))
+    
+    for attempt in range(max_attempts):
+        try:
+            # Get the current state of the picking
+            picking_data = models.execute_kw(db, uid, password, 'stock.picking', 'read', 
+                [[picking_id]], {'fields': ['state', 'name']})
+                
+            if not picking_data:
+                return False, "unknown", f"No se encontró la transferencia con ID {picking_id}"
+                
+            picking = picking_data[0]
+            current_state = picking['state']
+            picking_name = picking.get('name', str(picking_id))
+            
+            # Check if it's in 'done' state
+            if current_state == 'done':
+                return True, current_state, f"La transferencia {picking_name} se completó exitosamente (Estado: {current_state})"
+            
+            # If we haven't reached the max attempts, wait and try again
+            if attempt < max_attempts - 1:
+                time.sleep(delay_between_attempts)
+            else:
+                # This is the last attempt and it's still not 'done'
+                state_labels = {
+                    'draft': 'Borrador',
+                    'waiting': 'Esperando',
+                    'confirmed': 'En espera',
+                    'assigned': 'Preparado',
+                    'done': 'Hecho',
+                    'cancel': 'Cancelado'
+                }
+                state_label = state_labels.get(current_state, current_state)
+                return False, current_state, f"La transferencia {picking_name} no alcanzó el estado 'Hecho'. Estado actual: {state_label}"
+                
+        except Exception as ex:
+            if attempt < max_attempts - 1:
+                time.sleep(delay_between_attempts)
+            else:
+                return False, "error", f"Error al verificar el estado: {str(ex)}"
+    
+    return False, "unknown", "No se pudo determinar el estado de la transferencia"
+
+# Create a separate function to avoid the circular import
+def create_transfer_wrapper(*args, **kwargs):
+    """Wrapper function to avoid circular imports"""
+    # Dynamically import create_transfer only when needed
+    from create_transfer import create_transfer as ct
+    return ct(*args, **kwargs)
+
+def create_entry_with_verification(warehouse_name, products):
+    """
+    Create an inventory entry directly without verification
+    
+    Args:
+        warehouse_name (str): Name of the destination warehouse
+        products (list): List of Producto objects with reference, quantity and cost
+        
+    Returns:
+        dict: Result of the operation with status and details
+    """
+    try:
+        # Call the original create_entry function directly
+        result = create_entry(warehouse_name, products)
+        
+        # Check if an error occurred
+        if isinstance(result, str) and "Error" in result:
+            return {
+                "success": False,
+                "message": result,
+                "state": "error"
+            }
+        
+        # Create a success response
+        return {
+            "success": True,
+            "message": f"Entrada procesada correctamente: {str(result)}",
+            "result": result
+        }
+        
+    except Exception as ex:
+        return {
+            "success": False,
+            "message": f"Error al crear la entrada: {str(ex)}",
+            "state": "error"
+        }

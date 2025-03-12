@@ -4,11 +4,61 @@ from views.traspaso_view import TraspasoView
 from views.history_view import HistoryView
 from views.entry_view import EntryView
 from views.auth_view import AuthView  # Import the new auth view
+import queue
+import threading
+import time
+
+# Create a helper for running functions in the main thread using a queue-based approach
+def add_run_in_main_thread(page):
+    """Add a helper method to run functions in the main thread"""
+    # Create a queue for functions to be executed on the main thread
+    callback_queue = queue.Queue()
+    
+    def run_in_main_thread(function):
+        """Queue a function to be executed on the main UI thread"""
+        callback_queue.put(function)
+        
+        # We need to trigger an update to process the queue
+        page.update()
+    
+    def process_callbacks(e=None):
+        """Process any pending callbacks in the queue"""
+        try:
+            # Process all current callbacks in the queue
+            while not callback_queue.empty():
+                callback = callback_queue.get_nowait()
+                if callback:
+                    callback()
+                callback_queue.task_done()
+        except Exception as ex:
+            print(f"Error processing callbacks: {str(ex)}")
+    
+    # Create a background thread that processes callbacks periodically
+    def background_processor():
+        while True:
+            try:
+                # Always check callbacks when page update is called
+                page.on_update = process_callbacks
+                
+                # Sleep to avoid using too much CPU
+                time.sleep(0.1)  # 100ms interval
+            except Exception as ex:
+                print(f"Error in background processor: {str(ex)}")
+    
+    # Add methods to page object
+    page.run_in_main_thread = run_in_main_thread
+    
+    # Start the background processing thread as daemon so it exits when the main thread exits
+    processor_thread = threading.Thread(target=background_processor, daemon=True)
+    processor_thread.start()
 
 def main(page: ft.Page):
     # Configure the page
     page.title = "Aplicación de Traspasos"
     page.theme_mode = ft.ThemeMode.LIGHT  # Already set to light theme
+    
+    # Add the run_in_main_thread helper to the page object
+    add_run_in_main_thread(page)
     
     # Create a light theme with a blue primary color
     page.theme = ft.Theme(

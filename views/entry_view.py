@@ -2,9 +2,11 @@ import flet as ft
 from datetime import datetime
 import threading
 import time
+# Use direct import of create_entry instead of create_entry_with_verification
 from create_entry import create_entry
 from utils import get_warehouses, get_products
-from config import Producto  # Import the Producto class
+from config import Producto
+from messaging import send_message_to_group
 
 class EntryView(ft.View):
     def __init__(self, page):
@@ -157,6 +159,16 @@ class EntryView(ft.View):
             expand=True
         )
         
+        # Create the confirmation container (initially hidden)
+        self.confirmation_container = ft.Container(
+            content=ft.Column([
+                ft.Text("Confirmar Entrada", size=20, weight=ft.FontWeight.BOLD),
+            ]),
+            padding=20,
+            expand=True,
+            visible=False
+        )
+        
         # Create the status container (initially hidden)
         self.status_container = ft.Container(
             content=ft.Column([
@@ -167,9 +179,10 @@ class EntryView(ft.View):
             visible=False
         )
         
-        # Main container that will hold either form or status
+        # Main container that will hold either form, confirmation, or status
         self.controls = [
             self.form_container,
+            self.confirmation_container,
             self.status_container
         ]
     
@@ -331,6 +344,7 @@ class EntryView(ft.View):
     def save_entry(self, e):
         # Show loading state on the button
         original_button = e.control
+        self.entry_button = original_button  # Store for later use
         original_button.disabled = True
         original_button.icon = ft.ProgressRing(width=16, height=16, stroke_width=2)
         original_button.text = "Procesando..."
@@ -342,7 +356,7 @@ class EntryView(ft.View):
             self.page.snack_bar.open = True
             # Reset button
             original_button.disabled = False
-            original_button.icon = ft.icons.SAVE
+            original_button.icon = ft.Icons.SAVE  # Updated from ft.icons.SAVE
             original_button.text = "Procesar Entrada"
             self.page.update()
             return
@@ -352,14 +366,159 @@ class EntryView(ft.View):
             self.page.snack_bar.open = True
             # Reset button
             original_button.disabled = False
-            original_button.icon = ft.icons.SAVE
+            original_button.icon = ft.Icons.SAVE  # Updated from ft.icons.SAVE
             original_button.text = "Procesar Entrada"
             self.page.update()
             return
         
-        # Hide form and show status
+        # Instead of a dialog, show the confirmation screen
+        self.show_confirmation_screen()
+    
+    def show_confirmation_screen(self):
+        """Show a confirmation screen before processing the entry"""
+        # Reset entry button
+        self.entry_button.disabled = False
+        self.entry_button.icon = ft.Icons.SAVE  # Updated from ft.icons.SAVE
+        self.entry_button.text = "Procesar Entrada"
+        
+        # Warehouse info
+        destination_warehouse = self.warehouse_dropdown.value
+        
+        # Build product list with costs
+        product_details = []
+        total_cost = 0.0
+        for producto in self.selected_products:
+            product_name = next((p.name for p in self.products if p.default_code == producto.referencia), producto.referencia)
+            item_total = producto.cantidad * producto.costo
+            total_cost += item_total
+            product_details.append(
+                ft.Container(
+                    content=ft.Text(f"• {producto.referencia} - {product_name}: {producto.cantidad} × ${producto.costo:.2f} = ${item_total:.2f}"),
+                    margin=ft.margin.only(bottom=5)
+                )
+            )
+        
+        # Populate confirmation screen
+        self.confirmation_container.content = ft.Column([
+            # Header
+            ft.Text("Confirmar Entrada", size=24, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE),
+            ft.Divider(),
+            
+            # Warehouse details
+            ft.Text("Destino", size=18, weight=ft.FontWeight.BOLD),
+            ft.Container(
+                content=ft.Row([
+                    ft.Icon(ft.Icons.ARROW_DOWNWARD, color=ft.Colors.GREEN, size=18),  # Updated from ft.icons.ARROW_DOWNWARD
+                    ft.Text(f"Almacén: {destination_warehouse}", size=16)
+                ]),
+                margin=ft.margin.only(bottom=10, left=10)
+            ),
+            ft.Divider(),
+            
+            # Product details
+            ft.Text(f"Productos a Ingresar ({len(self.selected_products)})", size=18, weight=ft.FontWeight.BOLD),
+            ft.Container(
+                content=ft.Column(product_details, scroll=ft.ScrollMode.AUTO),
+                height=200,
+                border=ft.border.all(1, ft.Colors.GREY_400),
+                border_radius=5,
+                padding=10,
+                margin=ft.margin.only(bottom=10)
+            ),
+            
+            # Total cost
+            ft.Container(
+                content=ft.Text(f"Costo Total: ${total_cost:.2f}", weight=ft.FontWeight.BOLD, size=18),
+                alignment=ft.alignment.center_right,
+                margin=ft.margin.only(bottom=20)
+            ),
+            
+            # Confirmation question
+            ft.Text("¿Desea confirmar esta entrada de productos?", size=16, weight=ft.FontWeight.BOLD),
+            
+            # Action buttons
+            ft.Row([
+                ft.ElevatedButton(
+                    "Sí, Confirmar Entrada",
+                    icon=ft.Icons.CHECK,  # Updated from ft.icons.CHECK
+                    on_click=self.process_confirmed_entry,
+                    style=ft.ButtonStyle(color=ft.Colors.WHITE, bgcolor=ft.Colors.GREEN),
+                    height=50
+                ),
+                ft.OutlinedButton(
+                    "Cancelar",
+                    icon=ft.Icons.CANCEL,  # Updated from ft.icons.CANCEL
+                    on_click=self.cancel_confirmation,
+                    height=50
+                )
+            ], alignment=ft.MainAxisAlignment.CENTER, spacing=20)
+        ], spacing=10, scroll=ft.ScrollMode.AUTO)
+        
+        # Show confirmation screen, hide form
         self.form_container.visible = False
+        self.confirmation_container.visible = True
+        self.status_container.visible = False
+        self.page.update()
+    
+    def cancel_confirmation(self, e):
+        """Return to the form view without processing the entry"""
+        self.form_container.visible = True
+        self.confirmation_container.visible = False
+        self.status_container.visible = False
+        self.page.update()
+    
+    def process_entry(self):
+        # Update status during the process
+        status_text = self.status_container.content.controls[5]  # Get the status text control
+        progress = self.status_container.content.controls[6]  # Get the progress bar control
+        
+        status_text.value = "Contactando al servidor..."
+        self.page.update()
+        time.sleep(0.5)
+        
+        try:
+            # Call the create_entry function directly instead of create_entry_with_verification
+            status_text.value = "Enviando datos al servidor..."
+            self.page.update()
+            
+            # Execute the entry creation directly
+            result = create_entry(
+                self.warehouse_dropdown.value,
+                self.selected_products
+            )
+            
+            status_text.value = "Procesando respuesta del servidor..."
+            self.page.update()
+            time.sleep(0.5)
+            
+            # Handle the result from create_entry (which returns a string)
+            if isinstance(result, str) and "Error" in result:
+                # Error occurred
+                self.show_entry_result(status_text, result, False)
+            else:
+                # Success case
+                success_message = f"Entrada procesada correctamente: {result}"
+                self.show_entry_result(status_text, success_message, True)
+                
+        except Exception as ex:
+            self.show_entry_result(status_text, f"Error inesperado: {str(ex)}", False)
+            
+        # Remove progress bar when done
+        if progress in self.status_container.content.controls:
+            self.status_container.content.controls.remove(progress)
+            self.page.update()
+    
+    def process_confirmed_entry(self, e):
+        """Process the entry after confirmation"""
+        # Hide confirmation, show status
+        self.confirmation_container.visible = False
         self.status_container.visible = True
+        
+        # Store reference to confirm button
+        self.confirm_button = e.control
+        self.confirm_button.disabled = True
+        self.confirm_button.icon = ft.ProgressRing(width=16, height=16, stroke_width=2)
+        self.confirm_button.text = "Procesando..."
         
         # Create status content
         status_text = ft.Text("Procesando...")
@@ -378,64 +537,25 @@ class EntryView(ft.View):
         
         self.page.update()
         
-        # Process the entry
-        def process_entry():
-            # Update status during the process
-            status_text.value = "Contactando al servidor..."
-            self.page.update()
-            time.sleep(0.5)
-            
-            try:
-                # Call the create_entry function with the correct parameters
-                status_text.value = "Enviando datos al servidor..."
-                self.page.update()
-                
-                # Execute the entry creation with the correct parameters
-                result = create_entry(
-                    self.warehouse_dropdown.value,
-                    self.selected_products
-                )
-                
-                status_text.value = "Procesando respuesta del servidor..."
-                self.page.update()
-                time.sleep(0.5)
-                
-                # Handle the result
-                if isinstance(result, str) and "Error" in result:
-                    self.show_entry_result(status_text, result, False)
-                else:
-                    self.show_entry_result(status_text, str(result), True)
-                    
-            except Exception as ex:
-                self.show_entry_result(status_text, f"Error inesperado: {str(ex)}", False)
-                
-            # Remove progress bar when done
-            self.status_container.content.controls.remove(progress)
-            self.page.update()
-        
-        # Start the process in a separate thread
-        threading.Thread(target=process_entry).start()
+        # Process the entry in a separate thread
+        threading.Thread(target=self.process_entry).start()
     
     def show_entry_result(self, status_text, result, success):
         """Show the entry result in the status container"""
-        # Update status text
-        if success:
+        # Handle different success states: True, False, or 'warning'
+        if success is True:
+            # Full success
             status_text.value = "Entrada completada con éxito"
             status_text.color = ft.Colors.GREEN
             bg_color = ft.Colors.GREEN_50
-        else:
-            status_text.value = f"Error: {result}"
-            status_text.color = ft.Colors.RED
-            bg_color = ft.Colors.RED_50
-        
-        # Create result content
-        result_column = ft.Column([
-            ft.Divider(),
-            ft.Text("Detalles de Productos:", weight=ft.FontWeight.BOLD),
-        ])
-        
-        # Add product details if successful
-        if success:
+            
+            # Create result content
+            result_column = ft.Column([
+                ft.Divider(),
+                ft.Text("Detalles de Productos:", weight=ft.FontWeight.BOLD),
+            ])
+            
+            # Add product details if successful
             for producto in self.selected_products:
                 product_name = next((p.name for p in self.products if p.default_code == producto.referencia), producto.referencia)
                 result_column.controls.append(
@@ -443,21 +563,151 @@ class EntryView(ft.View):
                 )
             result_column.controls.append(ft.Divider())
             result_column.controls.append(ft.Text(result))
-        
-        # Add button to create a new entry
-        result_column.controls.append(
-            ft.ElevatedButton(
-                "Nueva entrada",
-                icon=ft.Icons.REFRESH,
-                on_click=self.reset_form,
-                style=ft.ButtonStyle(color=ft.Colors.WHITE, bgcolor=ft.Colors.BLUE)
+            
+            # Display notification status text
+            notification_status = ft.Text(
+                "Enviando notificación a WhatsApp...",
+                color=ft.Colors.BLUE
             )
-        )
-        
-        # Update the status container
-        self.status_container.bgcolor = bg_color
-        self.status_container.content.controls.extend(result_column.controls)
-        self.page.update()
+            result_column.controls.append(ft.Divider())
+            result_column.controls.append(notification_status)
+            
+            # Update the status container
+            self.status_container.bgcolor = bg_color
+            self.status_container.content.controls.extend(result_column.controls)
+            self.page.update()
+            
+            # Prepare notification message for WhatsApp
+            warehouse_name = self.warehouse_dropdown.value
+            
+            product_details = []
+            for producto in self.selected_products:
+                product_name = next((p.name for p in self.products if p.default_code == producto.referencia), producto.referencia)
+                product_details.append(f"• {producto.referencia} - {product_name}: {producto.cantidad}")
+            
+            # Format the message
+            message = f"Entrada {warehouse_name}\n" + "\n".join(product_details)
+            
+            # Send WhatsApp message and update status
+            def send_notification():
+                try:
+                    notification_status.value = "Contactando servidor de mensajería..."
+                    self.page.update()
+                    
+                    # Send message with timeout and capture result
+                    notification_result = send_message_to_group(message)
+                    
+                    # Update notification status based on result
+                    if "Error" in notification_result:
+                        notification_status.value = f"⚠️ {notification_result}"
+                        notification_status.color = ft.Colors.RED
+                    else:
+                        notification_status.value = f"✅ Mensaje enviado correctamente al grupo de ENTRADAS Y SALIDAS"
+                        notification_status.color = ft.Colors.GREEN
+                        
+                except Exception as ex:
+                    notification_status.value = f"⚠️ Error al enviar el mensaje al grupo de ENTRADAS Y SALIDAS: {str(ex)}"
+                    notification_status.color = ft.Colors.RED
+                
+                # Add button to create a new entry after notification handling
+                self.status_container.content.controls.append(
+                    ft.ElevatedButton(
+                        "Nueva entrada",
+                        icon=ft.Icons.REFRESH,
+                        on_click=self.reset_form,
+                        style=ft.ButtonStyle(color=ft.Colors.WHITE, bgcolor=ft.Colors.BLUE)
+                    )
+                )
+                self.page.update()
+            
+            # Start notification in a separate thread
+            threading.Thread(target=send_notification).start()
+        elif success == 'warning':
+            # Partial success - entry created but with warnings
+            status_text.value = "Entrada procesada con advertencias"
+            status_text.color = ft.Colors.ORANGE
+            bg_color = ft.Colors.ORANGE_50
+            
+            # Create result content
+            result_column = ft.Column([
+                ft.Divider(),
+                ft.Icon(
+                    ft.Icons.WARNING_AMBER_ROUNDED,
+                    color=ft.Colors.ORANGE,
+                    size=40
+                ),
+                ft.Text(
+                    "La entrada se procesó pero requiere su atención",
+                    weight=ft.FontWeight.BOLD,
+                    color=ft.Colors.ORANGE,
+                    size=16
+                ),
+                ft.Divider(),
+                ft.Text("Detalles de Productos:", weight=ft.FontWeight.BOLD),
+            ])
+            
+            # Add product details
+            for producto in self.selected_products:
+                product_name = next((p.name for p in self.products if p.default_code == producto.referencia), producto.referencia)
+                result_column.controls.append(
+                    ft.Text(f"• {producto.referencia} - {product_name}: {producto.cantidad} unidades a ${producto.costo:.2f}")
+                )
+            
+            result_column.controls.append(ft.Divider())
+            result_column.controls.append(
+                ft.Text(
+                    result,
+                    color=ft.Colors.ORANGE
+                )
+            )
+            result_column.controls.append(
+                ft.Text(
+                    "Es posible que necesite ingresar a Odoo para completar la transferencia manualmente.",
+                    color=ft.Colors.ORANGE
+                )
+            )
+            
+            # Add button to create a new entry
+            result_column.controls.append(ft.Divider())
+            result_column.controls.append(
+                ft.ElevatedButton(
+                    "Nueva entrada",
+                    icon=ft.Icons.REFRESH,
+                    on_click=self.reset_form,
+                    style=ft.ButtonStyle(color=ft.Colors.WHITE, bgcolor=ft.Colors.BLUE)
+                )
+            )
+            
+            # Update the status container
+            self.status_container.bgcolor = bg_color
+            self.status_container.content.controls.extend(result_column.controls)
+            self.page.update()
+            
+        else:
+            # Error case (unchanged)
+            status_text.value = f"Error: {result}"
+            status_text.color = ft.Colors.RED
+            bg_color = ft.Colors.RED_50
+            
+            # Create result content
+            result_column = ft.Column([
+                ft.Divider(),
+                ft.Text("Detalles del error:", weight=ft.FontWeight.BOLD),
+                ft.Text(result),
+                ft.Divider(),
+                # Add button to create a new entry
+                ft.ElevatedButton(
+                    "Nueva entrada",
+                    icon=ft.Icons.REFRESH,
+                    on_click=self.reset_form,
+                    style=ft.ButtonStyle(color=ft.Colors.WHITE, bgcolor=ft.Colors.BLUE)
+                )
+            ])
+            
+            # Update the status container
+            self.status_container.bgcolor = bg_color
+            self.status_container.content.controls.extend(result_column.controls)
+            self.page.update()
     
     def reset_form(self, e=None):
         # Show loading state if this was triggered by a button
