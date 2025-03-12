@@ -114,4 +114,9 @@ def main(page: ft.Page):
     page.go('/')
 
 # Run the app
-ft.app(target=main, view=ft.WEB_BROWSER)
+if __name__ == "__main__":
+    # Always use web browser with port 5000
+    ft.app(target=main, view=ft.WEB_BROWSER, port=5000)
+else:
+    # For module imports or when running with 'flet run'
+    ft.app(target=main, view=ft.WEB_BROWSER, port=5000)
