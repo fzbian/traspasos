@@ -46,16 +46,17 @@ def check_stock_availability(product_code, warehouse_name, required_qty):
             
         product_id = product_ids[0]
         
-        # Check stock level
+        # Check stock level - use 'quantity' field for "on hand" quantity
         quant_data = models.execute_kw(db, uid, password, 'stock.quant', 'search_read', 
             [[('product_id', '=', product_id), ('location_id', '=', stock_location_id)]],
-            {'fields': ['quantity', 'available_quantity']}
+            {'fields': ['quantity']}  # Use 'quantity' instead of 'available_quantity'
         )
         
-        available_qty = sum(q.get('available_quantity', 0) for q in quant_data)
+        # Sum 'quantity' field for total on-hand stock
+        on_hand_qty = sum(q.get('quantity', 0) for q in quant_data)
         
         # Compare with required quantity
-        return available_qty >= required_qty, available_qty
+        return on_hand_qty >= required_qty, on_hand_qty
         
     except Exception as ex:
         print(f"Error checking stock: {str(ex)}")

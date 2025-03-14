@@ -460,7 +460,7 @@ def get_products_stock(product_codes, warehouse_names=None):
         ]
         quant_data = models.execute_kw(db, uid, password, 'stock.quant', 'search_read', 
             [quant_domain],
-            {'fields': ['product_id', 'location_id', 'quantity', 'available_quantity']}
+            {'fields': ['product_id', 'location_id', 'quantity']}  # Use 'quantity' for on-hand stock
         )
         
         # Process the results
@@ -469,7 +469,7 @@ def get_products_stock(product_codes, warehouse_names=None):
         for quant in quant_data:
             product_id = quant['product_id'][0]
             location_id = quant['location_id'][0]
-            qty = quant.get('available_quantity', 0)
+            qty = quant.get('quantity', 0)  # Use 'quantity' field for on-hand stock
             
             # Find which product and warehouse this belongs to
             product_code = product_map.get(product_id)
@@ -501,6 +501,7 @@ def get_products_stock(product_codes, warehouse_names=None):
 def get_products_stock_snapshot(product_codes, warehouse_names=None):
     """
     Get current stock levels for multiple products across warehouses to use as a snapshot.
+    Uses the 'quantity' field for on-hand stock.
     
     Args:
         product_codes (list): List of product default_codes
