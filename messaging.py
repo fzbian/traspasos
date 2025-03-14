@@ -3,7 +3,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from requests.exceptions import RequestException
 
-def send_message_to_group(message, group_name="A", timeout=60):
+def send_message_to_group(message, group_name="ENTRADAS Y SALIDAS", timeout=60):
     """
     Send a message to a specific group with timeout and error handling
     
